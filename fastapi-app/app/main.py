@@ -22,7 +22,7 @@ app = FastAPI(
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Adjust this in production
+    allow_origins=["*"],  # Vulnerable to CORS attacks, use with caution
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -165,6 +165,10 @@ def create_deployment(
     cpu_limit: str
 ) -> None:
     """Create a Deployment for the VS Code Server instance"""
+
+    # Generate the base path for this instance
+    instance_path = f"{INSTANCES_PATH_PREFIX}/{instance_id}"
+
     deployment = client.V1Deployment(
         metadata=client.V1ObjectMeta(
             name=instance_id,
@@ -184,7 +188,7 @@ def create_deployment(
                         client.V1Container(
                             name=BASE_NAME,
                             image=f"{BASE_NAME}:latest",
-                            image_pull_policy="Never",  # Use local image
+                            image_pull_policy="Never",
                             ports=[client.V1ContainerPort(container_port=8000)],
                             env_from=[
                                 client.V1EnvFromSource(
@@ -213,20 +217,14 @@ def create_deployment(
                             args=[
                                 "serve-web",
                                 "--accept-server-license-terms",
-                                "--host",
-                                "$(HOST)",
-                                "--port",
-                                "$(PORT)",
-                                "--connection-token",
-                                "$(TOKEN)",
-                                "--cli-data-dir",
-                                "$(CLI_DATA_DIR)",
-                                "--user-data-dir",
-                                "$(USER_DATA_DIR)",
-                                "--server-data-dir",
-                                "$(SERVER_DATA_DIR)",
-                                "--extensions-dir",
-                                "$(EXTENSIONS_DIR)"
+                                "--host", "0.0.0.0",
+                                "--port", "8000",
+                                "--connection-token", "$(TOKEN)",
+                                "--server-base-path", instance_path,
+                                "--cli-data-dir", "/root/.vscode/cli-data",
+                                "--user-data-dir", "/root/.vscode/user-data",
+                                "--server-data-dir", "/root/.vscode/server-data",
+                                "--extensions-dir", "/root/.vscode/extensions"
                             ]
                         )
                     ],
@@ -290,6 +288,10 @@ def create_service(instance_id: str) -> None:
 
 def create_ingress_for_instance(instance_id: str, path_prefix: str) -> None:
     """Create an Ingress for the VS Code Server instance using path-based routing"""
+
+    # Generate the full path for this instance
+    instance_path = f"{path_prefix}/{instance_id}"
+
     ingress = client.V1Ingress(
         metadata=client.V1ObjectMeta(
             name=f"{instance_id}-ingress",
@@ -300,7 +302,8 @@ def create_ingress_for_instance(instance_id: str, path_prefix: str) -> None:
                 "nginx.ingress.kubernetes.io/proxy-send-timeout": "3600",
                 "nginx.ingress.kubernetes.io/proxy-body-size": "0",
                 "nginx.ingress.kubernetes.io/proxy-buffer-size": "128k",
-                "nginx.ingress.kubernetes.io/rewrite-target": "/",
+                "nginx.ingress.kubernetes.io/proxy-http-version": "1.1",
+                "nginx.ingress.kubernetes.io/websocket-services": f"{instance_id}-service",
                 "nginx.ingress.kubernetes.io/use-regex": "true"
             }
         ),
@@ -317,7 +320,7 @@ def create_ingress_for_instance(instance_id: str, path_prefix: str) -> None:
                     http=client.V1HTTPIngressRuleValue(
                         paths=[
                             client.V1HTTPIngressPath(
-                                path=f"{path_prefix}/{instance_id}",
+                                path=f"{instance_path}(/.*)?",
                                 path_type="ImplementationSpecific",
                                 backend=client.V1IngressBackend(
                                     service=client.V1IngressServiceBackend(
