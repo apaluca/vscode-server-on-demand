@@ -1,0 +1,87 @@
+# Certificates and keys
+/certs/
+*.key
+*.crt
+*.pem
+*.cert
+*.cer
+
+# Kubernetes secrets
+*-secret.yaml
+*-secrets.yaml
+
+# Python virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# Environment-specific configuration
+.env
+*.env
+.env.*
+.env.local
+.env.development
+.env.test
+.env.production
+
+# Docker build artifacts
+.docker/
+docker-compose.override.yml
+
+# Minikube files
+.minikube/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Node.js/npm (if you add frontend components)
+node_modules/
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+package-lock.json
+
+# Logs
+*.log
+logs/
+log/
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+*.tmp
+.cache/
+
+# Build artifacts
+dist/
+build/
+out/
+
+# User-specific files
+user-settings/
+user-data/
+
+# Any file that might contain tokens or credentials
+*token*
+*credential*
+*password*
+*secret*
+*_token.sh
+*_secret.sh
+
+# Ignore any backups
+*.bak
+*.backup
+*-backup
+
+# Local configuration that shouldn't be shared
+kubeconfig
+.kube/
+kubectl.conf

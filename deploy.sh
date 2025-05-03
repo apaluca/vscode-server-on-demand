@@ -1,0 +1,66 @@
+#!/bin/bash
+
+set -e
+
+echo "=== VS Code Server On-Demand Management System Deployment ==="
+echo "This script will build and deploy the VS Code Server on-demand management system to Minikube."
+
+# Check if Minikube is running
+if ! minikube status | grep -q "Running"; then
+  echo "Starting Minikube..."
+  minikube start --cpus 3 --memory 6144
+  
+  # Enable the ingress addon
+  echo "Enabling the Ingress addon..."
+  minikube addons enable ingress
+else
+  echo "Minikube is already running."
+fi
+
+# Generate TLS certificates
+echo "Generating TLS certificates..."
+chmod +x generate-tls-cert.sh
+./generate-tls-cert.sh
+
+# Add an entry to your hosts file
+MINIKUBE_IP=$(minikube ip)
+echo "Adding entries to hosts file..."
+echo "You may be prompted for your password."
+
+# Check if entries already exist
+if grep -q "vscode.local" /etc/hosts; then
+  echo "Host entries already exist."
+else
+  echo "$MINIKUBE_IP vscode.local api.vscode.local" | sudo tee -a /etc/hosts
+fi
+
+# Build VS Code Server image (using existing Dockerfile)
+echo "Building VS Code Server image..."
+docker build -t vscode-server:latest -f Dockerfile .
+
+# Build FastAPI app image
+echo "Building FastAPI app image..."
+cd fastapi-app
+docker build -t vscode-manager:latest -f Dockerfile .
+cd ..
+
+# Load images into Minikube
+echo "Loading images into Minikube..."
+minikube image load vscode-server:latest
+minikube image load vscode-manager:latest
+
+# Deploy FastAPI application
+echo "Deploying FastAPI application..."
+kubectl apply -f fastapi-app-k8s.yaml
+
+# Wait for deployment to be ready
+echo "Waiting for deployment to be ready..."
+kubectl rollout status deployment/vscode-manager
+
+# Display access information
+echo "=== Deployment Complete ==="
+echo "FastAPI Management API is available at: https://api.vscode.local"
+echo "VS Code Server instances will be available at: https://<instance-id>.vscode.local"
+
+echo "You can test the API using:"
+echo "curl -k https://api.vscode.local/instances -H 'Content-Type: application/json' -d '{\"user_id\":\"user1\"}'"
