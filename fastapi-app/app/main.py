@@ -1,11 +1,11 @@
-from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from kubernetes import client, config
 from pydantic import BaseModel
 import uuid
 import os
 import logging
-from typing import Optional, Dict, Any, List
+from typing import Optional, List
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -98,6 +98,54 @@ def generate_instance_path(instance_id: str) -> str:
     """Generate a path for the VS Code Server instance"""
     return f"{INSTANCES_PATH_PREFIX}/{instance_id}"
 
+def ensure_user_workspace_pvc(user_id: str, storage_size: str) -> None:
+    """Create a PersistentVolumeClaim for the user's workspace if it doesn't exist"""
+    pvc_name = f"{user_id}-workspace"
+    
+    try:
+        # Try to get the PVC first to check if it exists
+        core_v1_api.read_namespaced_persistent_volume_claim(
+            name=pvc_name,
+            namespace=NAMESPACE
+        )
+        logger.info(f"Using existing workspace PVC for user {user_id}")
+        return
+    except client.exceptions.ApiException as e:
+        if e.status != 404:
+            # If error is not "Not Found", raise it
+            logger.error(f"Error checking workspace PVC: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to check workspace PVC: {str(e)}"
+            )
+    
+    # Create the PVC if it doesn't exist
+    pvc = client.V1PersistentVolumeClaim(
+        metadata=client.V1ObjectMeta(
+            name=pvc_name,
+            labels={"app": BASE_NAME, "user": user_id, "type": "workspace"}
+        ),
+        spec=client.V1PersistentVolumeClaimSpec(
+            access_modes=["ReadWriteOnce"],
+            resources=client.V1ResourceRequirements(
+                requests={"storage": storage_size}
+            )
+        )
+    )
+    
+    try:
+        core_v1_api.create_namespaced_persistent_volume_claim(
+            namespace=NAMESPACE,
+            body=pvc
+        )
+        logger.info(f"Created workspace PVC for user {user_id}")
+    except client.exceptions.ApiException as e:
+        logger.error(f"Error creating workspace PVC: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create workspace PVC: {str(e)}"
+        )
+
 def create_configmap(instance_id: str, access_token: str) -> None:
     """Create a ConfigMap for the VS Code Server instance"""
     configmap = client.V1ConfigMap(
@@ -158,7 +206,8 @@ def create_pvc(instance_id: str, storage_size: str) -> None:
         )
 
 def create_deployment(
-    instance_id: str, 
+    instance_id: str,
+    user_id: str,  # Added user_id parameter
     memory_request: str, 
     memory_limit: str,
     cpu_request: str,
@@ -168,11 +217,14 @@ def create_deployment(
 
     # Generate the base path for this instance
     instance_path = f"{INSTANCES_PATH_PREFIX}/{instance_id}"
+    
+    # Get the workspace PVC name
+    workspace_pvc_name = f"{user_id}-workspace"
 
     deployment = client.V1Deployment(
         metadata=client.V1ObjectMeta(
             name=instance_id,
-            labels={"app": BASE_NAME, "instance": instance_id}
+            labels={"app": BASE_NAME, "instance": instance_id, "user": user_id}
         ),
         spec=client.V1DeploymentSpec(
             replicas=1,
@@ -181,7 +233,7 @@ def create_deployment(
             ),
             template=client.V1PodTemplateSpec(
                 metadata=client.V1ObjectMeta(
-                    labels={"app": BASE_NAME, "instance": instance_id}
+                    labels={"app": BASE_NAME, "instance": instance_id, "user": user_id}
                 ),
                 spec=client.V1PodSpec(
                     containers=[
@@ -198,9 +250,15 @@ def create_deployment(
                                 )
                             ],
                             volume_mounts=[
+                                # VS Code Server configuration (instance-specific)
                                 client.V1VolumeMount(
                                     name="vscode-data",
                                     mount_path="/root/.vscode"
+                                ),
+                                # User workspace (shared across instances)
+                                client.V1VolumeMount(
+                                    name="workspace-data",
+                                    mount_path="/workspaces"
                                 )
                             ],
                             resources=client.V1ResourceRequirements(
@@ -229,10 +287,18 @@ def create_deployment(
                         )
                     ],
                     volumes=[
+                        # VS Code Server configuration (instance-specific)
                         client.V1Volume(
                             name="vscode-data",
                             persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
                                 claim_name=f"{instance_id}-data"
+                            )
+                        ),
+                        # User workspace (shared across instances)
+                        client.V1Volume(
+                            name="workspace-data",
+                            persistent_volume_claim=client.V1PersistentVolumeClaimVolumeSource(
+                                claim_name=workspace_pvc_name
                             )
                         )
                     ]
@@ -403,12 +469,13 @@ def delete_instance_resources(instance_id: str) -> None:
         )
         logger.info(f"Deleted ConfigMap for instance {instance_id}")
         
-        # Delete PVC (data will be lost!)
+        # Delete instance-specific PVC (VS Code configuration)
+        # Note: We DO NOT delete the user's workspace PVC here
         core_v1_api.delete_namespaced_persistent_volume_claim(
             name=f"{instance_id}-data",
             namespace=NAMESPACE
         )
-        logger.info(f"Deleted PVC for instance {instance_id}")
+        logger.info(f"Deleted instance PVC for instance {instance_id}")
         
     except client.exceptions.ApiException as e:
         if e.status == 404:
@@ -429,31 +496,30 @@ def list_user_instances(user_id: str) -> List[VSCodeServerResponse]:
         # Get all deployments with the user's ID in the name
         deployments = apps_v1_api.list_namespaced_deployment(
             namespace=NAMESPACE,
-            label_selector=f"app={BASE_NAME}"
+            label_selector=f"app={BASE_NAME},user={user_id}"
         )
         
         for deployment in deployments.items:
             instance_id = deployment.metadata.name
-            if instance_id.startswith(f"{user_id}-"):
-                # Get the ConfigMap to retrieve the access token
-                config_map = core_v1_api.read_namespaced_config_map(
-                    name=f"{instance_id}-config",
-                    namespace=NAMESPACE
+            # Get the ConfigMap to retrieve the access token
+            config_map = core_v1_api.read_namespaced_config_map(
+                name=f"{instance_id}-config",
+                namespace=NAMESPACE
+            )
+            
+            access_token = config_map.data.get("TOKEN", "")
+            path = generate_instance_path(instance_id)
+            url = f"https://{BASE_DOMAIN}{path}?tkn={access_token}"
+            status_str = get_instance_status(instance_id)
+            
+            instances.append(
+                VSCodeServerResponse(
+                    instance_id=instance_id,
+                    url=url,
+                    access_token=access_token,
+                    status=status_str
                 )
-                
-                access_token = config_map.data.get("TOKEN", "")
-                path = generate_instance_path(instance_id)
-                url = f"https://{BASE_DOMAIN}{path}?tkn={access_token}"
-                status_str = get_instance_status(instance_id)
-                
-                instances.append(
-                    VSCodeServerResponse(
-                        instance_id=instance_id,
-                        url=url,
-                        access_token=access_token,
-                        status=status_str
-                    )
-                )
+            )
     
     except client.exceptions.ApiException as e:
         logger.error(f"Error listing instances: {e}")
@@ -474,11 +540,15 @@ def create_instance(request: VSCodeServerRequest):
     access_token = generate_access_token()
     path = generate_instance_path(instance_id)
     
+    # Ensure the user's workspace PVC exists
+    ensure_user_workspace_pvc(request.user_id, request.storage_size)
+    
     # Create all necessary resources
     create_configmap(instance_id, access_token)
-    create_pvc(instance_id, request.storage_size)
+    create_pvc(instance_id, request.storage_size)  # Instance-specific PVC for VS Code configuration
     create_deployment(
-        instance_id, 
+        instance_id,
+        request.user_id,
         request.memory_request, 
         request.memory_limit,
         request.cpu_request,
@@ -570,6 +640,45 @@ def check_instance_status(instance_id: str):
         instance_id=instance_id,
         status=status_str
     )
+
+@app.get("/workspaces/{user_id}", response_model=dict)
+def get_user_workspace_status(user_id: str):
+    """Get details about a user's workspace"""
+    pvc_name = f"{user_id}-workspace"
+    
+    try:
+        # Try to get the PVC
+        pvc = core_v1_api.read_namespaced_persistent_volume_claim(
+            name=pvc_name,
+            namespace=NAMESPACE
+        )
+        
+        # Get all instances for this user
+        instances = list_user_instances(user_id)
+        
+        return {
+            "user_id": user_id,
+            "workspace_exists": True,
+            "storage_size": pvc.spec.resources.requests.get("storage", "Unknown"),
+            "status": pvc.status.phase,
+            "creation_time": pvc.metadata.creation_timestamp,
+            "active_instances": len(instances),
+            "instances": [i.instance_id for i in instances]
+        }
+    except client.exceptions.ApiException as e:
+        if e.status == 404:
+            return {
+                "user_id": user_id,
+                "workspace_exists": False,
+                "active_instances": 0,
+                "instances": []
+            }
+        else:
+            logger.error(f"Error checking workspace: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to check workspace: {str(e)}"
+            )
 
 # Health check endpoint
 @app.get("/health")
