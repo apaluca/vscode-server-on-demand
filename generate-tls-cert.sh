@@ -17,6 +17,7 @@ openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
 # Create Kubernetes secret from the generated certificates
 kubectl create secret tls vscode-server-tls \
   --key=./certs/$CERT_NAME.key \
-  --cert=./certs/$CERT_NAME.crt
+  --cert=./certs/$CERT_NAME.crt \
+  --dry-run=client -o yaml | kubectl apply -f -
 
 echo "TLS certificate created and stored in Kubernetes secret 'vscode-server-tls'"

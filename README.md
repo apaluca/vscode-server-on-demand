@@ -7,12 +7,12 @@ This system provides on-demand deployment and management of VS Code Server insta
 1. **FastAPI Management API**
    - REST API for deploying and deleting VS Code Server instances
    - Runs inside the Kubernetes cluster
-   - Exposed via Ingress at `https://api.vscode.local`
+   - Exposed via path-based routing at `https://vscode.local/api`
 
 2. **VS Code Server Pods**
    - Created on demand
    - Deleted when no longer needed
-   - Each instance has its own URL: `https://<instance-id>.vscode.local`
+   - Each instance has its own URL: `https://vscode.local/instances/<instance-id>`
 
 ## Prerequisites
 
@@ -43,7 +43,7 @@ This script will:
 - Start Minikube (if not already running)
 - Enable the NGINX Ingress controller
 - Generate TLS certificates
-- Add the required host entries to your `/etc/hosts` file
+- Add the required host entry to your `/etc/hosts` file
 - Build and load the Docker images
 - Deploy the FastAPI application
 - Configure access to the system
@@ -89,19 +89,19 @@ You can also interact with the API directly using curl or any HTTP client:
 
 ```bash
 # Create a new instance
-curl -k https://api.vscode.local/instances -H "Content-Type: application/json" -d '{"user_id":"user1"}'
+curl -k https://vscode.local/api/instances -H "Content-Type: application/json" -d '{"user_id":"user1"}'
 
 # List instances for a user
-curl -k "https://api.vscode.local/instances?user_id=user1"
+curl -k "https://vscode.local/api/instances?user_id=user1"
 
 # Get instance details
-curl -k https://api.vscode.local/instances/user1-abc123
+curl -k https://vscode.local/api/instances/user1-abc123
 
 # Delete an instance
-curl -k -X DELETE https://api.vscode.local/instances/user1-abc123
+curl -k -X DELETE https://vscode.local/api/instances/user1-abc123
 
 # Check instance status
-curl -k "https://api.vscode.local/status?instance_id=user1-abc123"
+curl -k "https://vscode.local/api/status?instance_id=user1-abc123"
 ```
 
 ## Accessing VS Code Server
@@ -109,7 +109,7 @@ curl -k "https://api.vscode.local/status?instance_id=user1-abc123"
 Once an instance is created, you can access it at the URL provided in the API response:
 
 ```
-https://<instance-id>.vscode.local?tkn=<access_token>
+https://vscode.local/instances/<instance-id>?tkn=<access_token>
 ```
 
 Since the system uses self-signed certificates, you'll need to accept the security warning in your browser.
@@ -129,10 +129,19 @@ When a user requests a new VS Code Server instance:
    - PersistentVolumeClaim for data persistence
    - Deployment for the VS Code Server pod
    - Service to expose the pod
-   - Ingress for external access
+   - Ingress for path-based routing
 3. The user receives the URL and access token for the instance
 
 When a user deletes an instance, all associated resources are deleted.
+
+## Path-Based Routing
+
+This system uses path-based routing instead of subdomain-based routing:
+
+- API endpoints are accessible at `https://vscode.local/api/...`
+- VS Code Server instances are accessible at `https://vscode.local/instances/<instance-id>`
+
+The NGINX Ingress controller handles the routing to the appropriate backend services.
 
 ## Configuration Options
 

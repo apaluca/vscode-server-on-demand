@@ -29,9 +29,9 @@ echo "You may be prompted for your password."
 
 # Check if entries already exist
 if grep -q "vscode.local" /etc/hosts; then
-  echo "Host entries already exist."
+  echo "Host entry already exists."
 else
-  echo "$MINIKUBE_IP vscode.local api.vscode.local" | sudo tee -a /etc/hosts
+  echo "$MINIKUBE_IP vscode.local" | sudo tee -a /etc/hosts
 fi
 
 # Build VS Code Server image (using existing Dockerfile)
@@ -59,8 +59,8 @@ kubectl rollout status deployment/vscode-manager
 
 # Display access information
 echo "=== Deployment Complete ==="
-echo "FastAPI Management API is available at: https://api.vscode.local"
-echo "VS Code Server instances will be available at: https://<instance-id>.vscode.local"
+echo "FastAPI Management API is available at: https://vscode.local/api"
+echo "VS Code Server instances will be available at: https://vscode.local/instances/<instance-id>"
 
 echo "You can test the API using:"
-echo "curl -k https://api.vscode.local/instances -H 'Content-Type: application/json' -d '{\"user_id\":\"user1\"}'"
+echo "curl -k https://vscode.local/api/instances -H 'Content-Type: application/json' -d '{\"user_id\":\"user1\"}'"

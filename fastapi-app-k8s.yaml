@@ -24,7 +24,7 @@ rules:
   resources: ["configmaps", "services", "persistentvolumeclaims"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 - apiGroups: ["apps"]
-  resources: ["deployments"]
+  resources: ["deployments", "deployments/status"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 - apiGroups: ["networking.k8s.io"]
   resources: ["ingresses"]
@@ -103,24 +103,26 @@ spec:
     targetPort: 8080
   type: ClusterIP
 ---
-# Ingress for the FastAPI application
+# Ingress for path-based routing
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: vscode-manager-ingress
   annotations:
     nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    nginx.ingress.kubernetes.io/rewrite-target: "/$2"
+    nginx.ingress.kubernetes.io/use-regex: "true"
 spec:
   tls:
   - hosts:
-    - api.vscode.local
+    - vscode.local
     secretName: vscode-server-tls
   rules:
-  - host: api.vscode.local
+  - host: vscode.local
     http:
       paths:
-      - path: /
-        pathType: Prefix
+      - path: "/api(/|$)(.*)"
+        pathType: ImplementationSpecific
         backend:
           service:
             name: vscode-manager-service

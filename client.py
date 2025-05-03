@@ -17,7 +17,7 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Default API endpoint
-DEFAULT_API_URL = "https://api.vscode.local"
+DEFAULT_API_URL = "https://vscode.local/api"
 
 def parse_args():
     """Parse command-line arguments"""

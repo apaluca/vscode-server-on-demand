@@ -54,6 +54,10 @@ DEFAULT_MEMORY_LIMIT = "1Gi"
 DEFAULT_CPU_REQUEST = "100m"
 DEFAULT_CPU_LIMIT = "500m"
 
+# Path configuration for path-based routing
+API_PATH_PREFIX = "/api"
+INSTANCES_PATH_PREFIX = "/instances"
+
 # Data Models
 class VSCodeServerRequest(BaseModel):
     """Request model for creating a VS Code Server instance"""
@@ -90,9 +94,9 @@ def generate_access_token() -> str:
     """Generate a UUID-like access token for VS Code Server"""
     return str(uuid.uuid4())
 
-def generate_instance_host(instance_id: str) -> str:
-    """Generate a host name for the VS Code Server instance"""
-    return f"{instance_id}.{BASE_DOMAIN}"
+def generate_instance_path(instance_id: str) -> str:
+    """Generate a path for the VS Code Server instance"""
+    return f"{INSTANCES_PATH_PREFIX}/{instance_id}"
 
 def create_configmap(instance_id: str, access_token: str) -> None:
     """Create a ConfigMap for the VS Code Server instance"""
@@ -284,8 +288,8 @@ def create_service(instance_id: str) -> None:
             detail=f"Failed to create Service: {str(e)}"
         )
 
-def create_ingress(instance_id: str, host: str) -> None:
-    """Create an Ingress for the VS Code Server instance"""
+def create_ingress_for_instance(instance_id: str, path_prefix: str) -> None:
+    """Create an Ingress for the VS Code Server instance using path-based routing"""
     ingress = client.V1Ingress(
         metadata=client.V1ObjectMeta(
             name=f"{instance_id}-ingress",
@@ -295,24 +299,26 @@ def create_ingress(instance_id: str, host: str) -> None:
                 "nginx.ingress.kubernetes.io/proxy-read-timeout": "3600",
                 "nginx.ingress.kubernetes.io/proxy-send-timeout": "3600",
                 "nginx.ingress.kubernetes.io/proxy-body-size": "0",
-                "nginx.ingress.kubernetes.io/proxy-buffer-size": "128k"
+                "nginx.ingress.kubernetes.io/proxy-buffer-size": "128k",
+                "nginx.ingress.kubernetes.io/rewrite-target": "/",
+                "nginx.ingress.kubernetes.io/use-regex": "true"
             }
         ),
         spec=client.V1IngressSpec(
             tls=[
                 client.V1IngressTLS(
-                    hosts=[host],
+                    hosts=[BASE_DOMAIN],
                     secret_name=TLS_SECRET_NAME
                 )
             ],
             rules=[
                 client.V1IngressRule(
-                    host=host,
+                    host=BASE_DOMAIN,
                     http=client.V1HTTPIngressRuleValue(
                         paths=[
                             client.V1HTTPIngressPath(
-                                path="/",
-                                path_type="Prefix",
+                                path=f"{path_prefix}/{instance_id}",
+                                path_type="ImplementationSpecific",
                                 backend=client.V1IngressBackend(
                                     service=client.V1IngressServiceBackend(
                                         name=f"{instance_id}-service",
@@ -433,8 +439,8 @@ def list_user_instances(user_id: str) -> List[VSCodeServerResponse]:
                 )
                 
                 access_token = config_map.data.get("TOKEN", "")
-                host = generate_instance_host(instance_id)
-                url = f"https://{host}?tkn={access_token}"
+                path = generate_instance_path(instance_id)
+                url = f"https://{BASE_DOMAIN}{path}?tkn={access_token}"
                 status_str = get_instance_status(instance_id)
                 
                 instances.append(
@@ -463,7 +469,7 @@ def create_instance(request: VSCodeServerRequest):
     """Create a new VS Code Server instance"""
     instance_id = generate_instance_id(request.user_id)
     access_token = generate_access_token()
-    host = generate_instance_host(instance_id)
+    path = generate_instance_path(instance_id)
     
     # Create all necessary resources
     create_configmap(instance_id, access_token)
@@ -476,10 +482,10 @@ def create_instance(request: VSCodeServerRequest):
         request.cpu_limit
     )
     create_service(instance_id)
-    create_ingress(instance_id, host)
+    create_ingress_for_instance(instance_id, INSTANCES_PATH_PREFIX)
     
     # Generate the access URL
-    url = f"https://{host}?tkn={access_token}"
+    url = f"https://{BASE_DOMAIN}{path}?tkn={access_token}"
     
     return VSCodeServerResponse(
         instance_id=instance_id,
@@ -499,8 +505,8 @@ def get_instance(instance_id: str):
         )
         
         access_token = config_map.data.get("TOKEN", "")
-        host = generate_instance_host(instance_id)
-        url = f"https://{host}?tkn={access_token}"
+        path = generate_instance_path(instance_id)
+        url = f"https://{BASE_DOMAIN}{path}?tkn={access_token}"
         status_str = get_instance_status(instance_id)
         
         return VSCodeServerResponse(
