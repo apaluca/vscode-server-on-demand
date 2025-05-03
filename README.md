@@ -1,6 +1,6 @@
 # VS Code Server On-Demand Management System
 
-This system provides on-demand deployment and management of VS Code Server instances in a Minikube Kubernetes cluster. It consists of a FastAPI application that manages the lifecycle of VS Code Server pods, allowing them to be created and deleted on request.
+This system provides on-demand deployment and management of VS Code Server instances in a Minikube Kubernetes cluster. It consists of a FastAPI application that manages the lifecycle of VS Code Server pods, allowing them to be created and deleted on request, with persistent workspaces.
 
 ## System Components
 
@@ -13,6 +13,11 @@ This system provides on-demand deployment and management of VS Code Server insta
    - Created on demand
    - Deleted when no longer needed
    - Each instance has its own URL: `https://vscode.local/instances/<instance-id>`
+
+3. **Persistent Workspaces**
+   - User workspaces persist across all instances
+   - Each user has a dedicated workspace volume
+   - All instances for a user share the same workspace data
 
 ## Prerequisites
 
@@ -102,6 +107,9 @@ curl -k -X DELETE https://vscode.local/api/instances/user1-abc123
 
 # Check instance status
 curl -k "https://vscode.local/api/status?instance_id=user1-abc123"
+
+# Check user workspace status
+curl -k "https://vscode.local/api/workspaces/user1"
 ```
 
 ## Accessing VS Code Server
@@ -114,6 +122,24 @@ https://vscode.local/instances/<instance-id>?tkn=<access_token>
 
 Since the system uses self-signed certificates, you'll need to accept the security warning in your browser.
 
+## Workspace Persistence
+
+### How It Works
+
+1. **User-Based Workspaces**: Each user gets a dedicated persistent volume for their workspace data
+2. **Shared Across Instances**: All VS Code Server instances for a user share the same workspace volume
+3. **Instance-Specific Configuration**: Each instance still has its own configuration volume for VS Code settings
+4. **Persistent Files**: Files created in `/workspaces` directory persist across all instances and instance restarts
+
+### Directory Structure
+
+- `/workspaces`: User's persistent workspace files (shared across all instances)
+- `/root/.vscode`: VS Code Server configuration (unique to each instance)
+  - `cli-data`: CLI-related data
+  - `user-data`: User settings and preferences
+  - `server-data`: Server-specific data
+  - `extensions`: Installed extensions
+
 ## System Architecture
 
 The system architecture follows this pattern:
@@ -124,15 +150,17 @@ User Request → FastAPI App → Kubernetes API → VS Code Server Pod Created/D
 
 When a user requests a new VS Code Server instance:
 1. The FastAPI application receives the request
-2. It creates the necessary Kubernetes resources:
+2. It ensures the user's workspace volume exists (or creates it)
+3. It creates the necessary Kubernetes resources:
    - ConfigMap for configuration
-   - PersistentVolumeClaim for data persistence
+   - PersistentVolumeClaim for instance configuration
+   - PersistentVolumeClaim for user workspace (shared across instances)
    - Deployment for the VS Code Server pod
    - Service to expose the pod
    - Ingress for path-based routing
-3. The user receives the URL and access token for the instance
+4. The user receives the URL and access token for the instance
 
-When a user deletes an instance, all associated resources are deleted.
+When a user deletes an instance, the instance-specific resources are deleted but the user's workspace data remains intact.
 
 ## Path-Based Routing
 
@@ -189,6 +217,13 @@ kubectl logs -l app=vscode-server,instance=<instance-id>
 3. **API Not Accessible**:
    Verify that the Ingress controller is running and the host entry is correctly set in `/etc/hosts`.
 
+4. **Workspace Persistence Issues**:
+   Check if the workspace PVC exists and is properly mounted:
+   ```bash
+   kubectl get pvc -l type=workspace
+   kubectl exec -it <pod-name> -- ls -la /workspaces
+   ```
+
 ## Cleanup
 
 To delete the entire system:
@@ -202,6 +237,8 @@ kubectl delete service -l app=vscode-server
 kubectl delete ingress -l app=vscode-server
 kubectl delete configmap -l app=vscode-server
 kubectl delete pvc -l app=vscode-server
+# Delete user workspace PVCs
+kubectl delete pvc -l type=workspace
 ```
 
 ## License
