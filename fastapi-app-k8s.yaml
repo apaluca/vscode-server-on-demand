@@ -21,7 +21,7 @@ metadata:
   name: vscode-manager-role
 rules:
 - apiGroups: [""]
-  resources: ["configmaps", "services", "persistentvolumeclaims"]
+  resources: ["configmaps", "services", "persistentvolumeclaims", "pods", "pods/exec"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 - apiGroups: ["apps"]
   resources: ["deployments", "deployments/status"]

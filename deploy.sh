@@ -34,10 +34,6 @@ else
   echo "$MINIKUBE_IP vscode.local" | sudo tee -a /etc/hosts
 fi
 
-# Build VS Code Server image (using existing Dockerfile)
-echo "Building VS Code Server image..."
-docker build -t vscode-server:latest -f Dockerfile .
-
 # Build FastAPI app image
 echo "Building FastAPI app image..."
 cd fastapi-app
@@ -46,7 +42,6 @@ cd ..
 
 # Load images into Minikube
 echo "Loading images into Minikube..."
-minikube image load vscode-server:latest
 minikube image load vscode-manager:latest
 
 # Deploy FastAPI application
@@ -62,5 +57,7 @@ echo "=== Deployment Complete ==="
 echo "FastAPI Management API is available at: https://vscode.local/api"
 echo "VS Code Server instances will be available at: https://vscode.local/instances/<instance-id>"
 
-echo "You can test the API using:"
-echo "curl -k https://vscode.local/api/instances -H 'Content-Type: application/json' -d '{\"user_id\":\"user1\"}'"
+echo "You can test the API using the client.py script:"
+echo "python client.py create --user-id user1 --base-image mcr.microsoft.com/devcontainers/python:1-3.12"
+echo "Or with curl:"
+echo "curl -k https://vscode.local/api/instances -H 'Content-Type: application/json' -d '{\"user_id\":\"user1\", \"base_image\":\"mcr.microsoft.com/devcontainers/python:1-3.12\"}'"

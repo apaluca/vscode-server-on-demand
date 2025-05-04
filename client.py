@@ -18,6 +18,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Default API endpoint
 DEFAULT_API_URL = "https://vscode.local/api"
+DEFAULT_BASE_IMAGE = "ubuntu:24.04"
 
 def parse_args():
     """Parse command-line arguments"""
@@ -33,6 +34,10 @@ def parse_args():
     create_parser.add_argument("--memory-limit", default="1Gi", help="Memory limit (default: 1Gi)")
     create_parser.add_argument("--cpu-request", default="100m", help="CPU request (default: 100m)")
     create_parser.add_argument("--cpu-limit", default="500m", help="CPU limit (default: 500m)")
+    create_parser.add_argument("--base-image", default=DEFAULT_BASE_IMAGE, 
+                             help=f"Base Docker image for the VS Code Server (default: {DEFAULT_BASE_IMAGE})")
+    create_parser.add_argument("--vscode-version", default="1.97.2", 
+                             help="VS Code Server version (default: 1.97.2)")
     
     # List instances command
     list_parser = subparsers.add_parser("list", help="List VS Code Server instances")
@@ -88,13 +93,16 @@ def create_instance(args):
         "memory_request": args.memory_request,
         "memory_limit": args.memory_limit,
         "cpu_request": args.cpu_request,
-        "cpu_limit": args.cpu_limit
+        "cpu_limit": args.cpu_limit,
+        "base_image": args.base_image,
+        "vscode_version": args.vscode_version
     }
     
     response = make_api_request("POST", f"{args.api_url}/instances", data)
     
     print("VS Code Server instance created successfully!")
     print(f"Instance ID: {response['instance_id']}")
+    print(f"Base Image: {response['base_image']}")
     print(f"Access URL: {response['url']}")
     print(f"Access Token: {response['access_token']}")
     print(f"Status: {response['status']}")
@@ -114,6 +122,7 @@ def list_instances(args):
     print(f"Found {len(instances)} VS Code Server instance(s) for user {args.user_id}:")
     for instance in instances:
         print(f"  • Instance ID: {instance['instance_id']}")
+        print(f"    Base Image: {instance['base_image']}")
         print(f"    Access URL: {instance['url']}")
         print(f"    Status: {instance['status']}")
         print()
@@ -126,6 +135,7 @@ def get_instance(args):
     
     print(f"VS Code Server instance details:")
     print(f"Instance ID: {response['instance_id']}")
+    print(f"Base Image: {response['base_image']}")
     print(f"Access URL: {response['url']}")
     print(f"Access Token: {response['access_token']}")
     print(f"Status: {response['status']}")

@@ -1,11 +1,12 @@
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from kubernetes import client, config
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 import uuid
 import os
 import logging
-from typing import Optional, List
+import re
+from typing import Optional, List, Dict, Any
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, 
@@ -22,7 +23,7 @@ app = FastAPI(
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Vulnerable to CORS attacks, use with caution
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -53,6 +54,7 @@ DEFAULT_MEMORY_REQUEST = "256Mi"
 DEFAULT_MEMORY_LIMIT = "1Gi"
 DEFAULT_CPU_REQUEST = "100m"
 DEFAULT_CPU_LIMIT = "500m"
+DEFAULT_BASE_IMAGE = "ubuntu:24.04"
 
 # Path configuration for path-based routing
 API_PATH_PREFIX = "/api"
@@ -67,13 +69,23 @@ class VSCodeServerRequest(BaseModel):
     memory_limit: Optional[str] = DEFAULT_MEMORY_LIMIT
     cpu_request: Optional[str] = DEFAULT_CPU_REQUEST
     cpu_limit: Optional[str] = DEFAULT_CPU_LIMIT
+    base_image: Optional[str] = DEFAULT_BASE_IMAGE
+    vscode_version: Optional[str] = "1.97.2"
     
+    @validator('base_image')
+    def validate_base_image(cls, v):
+        # Basic validation to ensure the base image format is valid
+        if not re.match(r'^[a-zA-Z0-9][-a-zA-Z0-9_./:]*$', v):
+            raise ValueError("Invalid base image format")
+        return v
+
 class VSCodeServerResponse(BaseModel):
     """Response model for VS Code Server instance details"""
     instance_id: str
     url: str
     access_token: str
     status: str
+    base_image: str
 
 class VSCodeServerList(BaseModel):
     """Response model for listing VS Code Server instances"""
@@ -146,7 +158,7 @@ def ensure_user_workspace_pvc(user_id: str, storage_size: str) -> None:
             detail=f"Failed to create workspace PVC: {str(e)}"
         )
 
-def create_configmap(instance_id: str, access_token: str) -> None:
+def create_configmap(instance_id: str, access_token: str, base_image: str, vscode_version: str) -> None:
     """Create a ConfigMap for the VS Code Server instance"""
     configmap = client.V1ConfigMap(
         metadata=client.V1ObjectMeta(
@@ -160,7 +172,9 @@ def create_configmap(instance_id: str, access_token: str) -> None:
             "CLI_DATA_DIR": "/root/.vscode/cli-data",
             "USER_DATA_DIR": "/root/.vscode/user-data",
             "SERVER_DATA_DIR": "/root/.vscode/server-data",
-            "EXTENSIONS_DIR": "/root/.vscode/extensions"
+            "EXTENSIONS_DIR": "/root/.vscode/extensions",
+            "BASE_IMAGE": base_image,
+            "VSCODE_VERSION": vscode_version
         }
     )
     
@@ -169,7 +183,7 @@ def create_configmap(instance_id: str, access_token: str) -> None:
             namespace=NAMESPACE,
             body=configmap
         )
-        logger.info(f"Created ConfigMap for instance {instance_id}")
+        logger.info(f"Created ConfigMap for instance {instance_id} with base image {base_image}")
     except client.exceptions.ApiException as e:
         logger.error(f"Error creating ConfigMap: {e}")
         raise HTTPException(
@@ -207,13 +221,15 @@ def create_pvc(instance_id: str, storage_size: str) -> None:
 
 def create_deployment(
     instance_id: str,
-    user_id: str,  # Added user_id parameter
+    user_id: str,
     memory_request: str, 
     memory_limit: str,
     cpu_request: str,
-    cpu_limit: str
+    cpu_limit: str,
+    base_image: str,
+    vscode_version: str
 ) -> None:
-    """Create a Deployment for the VS Code Server instance"""
+    """Create a Deployment for the VS Code Server instance with custom base image"""
 
     # Generate the base path for this instance
     instance_path = f"{INSTANCES_PATH_PREFIX}/{instance_id}"
@@ -221,6 +237,43 @@ def create_deployment(
     # Get the workspace PVC name
     workspace_pvc_name = f"{user_id}-workspace"
 
+    # Create the deployment - now using the pre-built image directly
+    container_image = base_image
+    
+    # Install script as command to install VS Code in the container at runtime
+    install_script = f"""
+    # Install dependencies
+    if ! command -v wget >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
+        if command -v apt-get >/dev/null 2>&1; then
+            apt-get update && apt-get install -y curl wget ca-certificates git
+        elif command -v yum >/dev/null 2>&1; then
+            yum install -y curl wget ca-certificates git
+        elif command -v apk >/dev/null 2>&1; then
+            apk add --no-cache curl wget ca-certificates git
+        fi
+    fi
+    
+    # Determine architecture
+    if [ "$(uname -m)" = "x86_64" ]; then
+        export TARGET='cli-linux-x64'
+    elif [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; then
+        export TARGET='cli-linux-arm64'
+    else
+        echo "Unsupported architecture: $(uname -m)"
+        exit 1
+    fi
+    
+    # Install VS Code
+    wget -qO- "https://update.code.visualstudio.com/{vscode_version}/${{TARGET}}/stable" | tar xvz -C /usr/bin/
+    chmod +x /usr/bin/code
+    
+    # Run VS Code Server
+    exec code serve-web --accept-server-license-terms --host 0.0.0.0 --port 8000 \
+        --connection-token "$TOKEN" --server-base-path {instance_path} \
+        --cli-data-dir "$CLI_DATA_DIR" --user-data-dir "$USER_DATA_DIR" \
+        --server-data-dir "$SERVER_DATA_DIR" --extensions-dir "$EXTENSIONS_DIR"
+    """
+    
     deployment = client.V1Deployment(
         metadata=client.V1ObjectMeta(
             name=instance_id,
@@ -239,8 +292,8 @@ def create_deployment(
                     containers=[
                         client.V1Container(
                             name=BASE_NAME,
-                            image=f"{BASE_NAME}:latest",
-                            image_pull_policy="Never",
+                            image=container_image,
+                            image_pull_policy="IfNotPresent",
                             ports=[client.V1ContainerPort(container_port=8000)],
                             env_from=[
                                 client.V1EnvFromSource(
@@ -271,19 +324,8 @@ def create_deployment(
                                     "cpu": cpu_limit
                                 }
                             ),
-                            command=["code"],
-                            args=[
-                                "serve-web",
-                                "--accept-server-license-terms",
-                                "--host", "0.0.0.0",
-                                "--port", "8000",
-                                "--connection-token", "$(TOKEN)",
-                                "--server-base-path", instance_path,
-                                "--cli-data-dir", "/root/.vscode/cli-data",
-                                "--user-data-dir", "/root/.vscode/user-data",
-                                "--server-data-dir", "/root/.vscode/server-data",
-                                "--extensions-dir", "/root/.vscode/extensions"
-                            ]
+                            command=["/bin/sh", "-c"],
+                            args=[install_script]
                         )
                     ],
                     volumes=[
@@ -312,7 +354,7 @@ def create_deployment(
             namespace=NAMESPACE,
             body=deployment
         )
-        logger.info(f"Created Deployment for instance {instance_id}")
+        logger.info(f"Created Deployment for instance {instance_id} with base image {base_image}")
     except client.exceptions.ApiException as e:
         logger.error(f"Error creating Deployment: {e}")
         raise HTTPException(
@@ -462,7 +504,7 @@ def delete_instance_resources(instance_id: str) -> None:
         )
         logger.info(f"Deleted Deployment for instance {instance_id}")
         
-        # Delete ConfigMap
+        # Delete ConfigMaps
         core_v1_api.delete_namespaced_config_map(
             name=f"{instance_id}-config",
             namespace=NAMESPACE
@@ -508,6 +550,7 @@ def list_user_instances(user_id: str) -> List[VSCodeServerResponse]:
             )
             
             access_token = config_map.data.get("TOKEN", "")
+            base_image = config_map.data.get("BASE_IMAGE", DEFAULT_BASE_IMAGE)
             path = generate_instance_path(instance_id)
             url = f"https://{BASE_DOMAIN}{path}?tkn={access_token}"
             status_str = get_instance_status(instance_id)
@@ -517,7 +560,8 @@ def list_user_instances(user_id: str) -> List[VSCodeServerResponse]:
                     instance_id=instance_id,
                     url=url,
                     access_token=access_token,
-                    status=status_str
+                    status=status_str,
+                    base_image=base_image
                 )
             )
     
@@ -535,7 +579,7 @@ def root():
 
 @app.post("/instances", response_model=VSCodeServerResponse, status_code=status.HTTP_201_CREATED)
 def create_instance(request: VSCodeServerRequest):
-    """Create a new VS Code Server instance"""
+    """Create a new VS Code Server instance with custom base image"""
     instance_id = generate_instance_id(request.user_id)
     access_token = generate_access_token()
     path = generate_instance_path(instance_id)
@@ -544,7 +588,7 @@ def create_instance(request: VSCodeServerRequest):
     ensure_user_workspace_pvc(request.user_id, request.storage_size)
     
     # Create all necessary resources
-    create_configmap(instance_id, access_token)
+    create_configmap(instance_id, access_token, request.base_image, request.vscode_version)
     create_pvc(instance_id, request.storage_size)  # Instance-specific PVC for VS Code configuration
     create_deployment(
         instance_id,
@@ -552,7 +596,9 @@ def create_instance(request: VSCodeServerRequest):
         request.memory_request, 
         request.memory_limit,
         request.cpu_request,
-        request.cpu_limit
+        request.cpu_limit,
+        request.base_image,
+        request.vscode_version
     )
     create_service(instance_id)
     create_ingress_for_instance(instance_id, INSTANCES_PATH_PREFIX)
@@ -564,7 +610,8 @@ def create_instance(request: VSCodeServerRequest):
         instance_id=instance_id,
         url=url,
         access_token=access_token,
-        status="Creating"
+        status="Creating",
+        base_image=request.base_image
     )
 
 @app.get("/instances/{instance_id}", response_model=VSCodeServerResponse)
@@ -578,6 +625,7 @@ def get_instance(instance_id: str):
         )
         
         access_token = config_map.data.get("TOKEN", "")
+        base_image = config_map.data.get("BASE_IMAGE", DEFAULT_BASE_IMAGE)
         path = generate_instance_path(instance_id)
         url = f"https://{BASE_DOMAIN}{path}?tkn={access_token}"
         status_str = get_instance_status(instance_id)
@@ -586,7 +634,8 @@ def get_instance(instance_id: str):
             instance_id=instance_id,
             url=url,
             access_token=access_token,
-            status=status_str
+            status=status_str,
+            base_image=base_image
         )
     
     except client.exceptions.ApiException as e:
@@ -663,7 +712,7 @@ def get_user_workspace_status(user_id: str):
             "status": pvc.status.phase,
             "creation_time": pvc.metadata.creation_timestamp,
             "active_instances": len(instances),
-            "instances": [i.instance_id for i in instances]
+            "instances": [{"instance_id": i.instance_id, "base_image": i.base_image} for i in instances]
         }
     except client.exceptions.ApiException as e:
         if e.status == 404:
