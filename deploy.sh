@@ -40,8 +40,8 @@ cd fastapi-app
 docker build -t vscode-manager:latest -f Dockerfile .
 cd ..
 
-# Load images into Minikube
-echo "Loading images into Minikube..."
+# Load image into Minikube
+echo "Loading image into Minikube..."
 minikube image load vscode-manager:latest
 
 # Deploy FastAPI application

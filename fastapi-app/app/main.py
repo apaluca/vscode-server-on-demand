@@ -236,9 +236,6 @@ def create_deployment(
     
     # Get the workspace PVC name
     workspace_pvc_name = f"{user_id}-workspace"
-
-    # Create the deployment - now using the pre-built image directly
-    container_image = base_image
     
     # Install script as command to install VS Code in the container at runtime
     install_script = f"""
@@ -292,7 +289,7 @@ def create_deployment(
                     containers=[
                         client.V1Container(
                             name=BASE_NAME,
-                            image=container_image,
+                            image=base_image,
                             image_pull_policy="IfNotPresent",
                             ports=[client.V1ContainerPort(container_port=8000)],
                             env_from=[
