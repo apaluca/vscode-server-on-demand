@@ -37,7 +37,7 @@ This system provides on-demand deployment and management of VS Code Server insta
 
 ## Kubernetes Compatibility
 
-This project has been tested with Kubernetes v1.21 - v1.28. The manifests use API versions that may need to be updated for newer Kubernetes versions.
+This project has been tested with Kubernetes v1.32.0. The manifests use API versions that may need to be updated for newer Kubernetes versions.
 
 ## Getting Started
 
