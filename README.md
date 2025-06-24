@@ -289,6 +289,8 @@ kubectl delete configmap -l app=vscode-server
 kubectl delete pvc -l app=vscode-server
 # Delete user workspace PVCs
 kubectl delete pvc -l type=workspace
+# Destroy minikube instance
+minikube delete --all
 ```
 
 ## License
